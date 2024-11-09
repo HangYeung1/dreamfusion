@@ -1,0 +1,10 @@
+{
+    "description of original picture" : {
+        "variation_prompt" : "a slightly different description of original picture",
+        "img_path" : "/data/srcimgs/example_name.png"
+    },
+    "keep repeating for all images" : {
+        "variation_prompt" : "a slightly different description of original picture",
+        "img_path" : "/data/srcimgs/example_name.png"
+    }
+}
