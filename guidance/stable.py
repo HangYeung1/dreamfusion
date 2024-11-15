@@ -1,73 +1,196 @@
+import logging
+from typing import Tuple
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from diffusers import StableDiffusionPipeline
 
-from diffusers import DDIMScheduler, StableDiffusionPipeline
 
-import logging
+class StableGuide(nn.Module):
+    """A Stable Diffusion v2-1 (SD) Guidance Wrapper.
 
-class Stable(nn.Module):
+    This class contains a disassembled SD pipeline for Score Distillation
+    Sampling (SDS). Note that SD is latent space!
+
+    Attributes:
+        device (torch.device): Device where guidance lives.
+        dtype (torch.dtype): Precision of guidance.
+        min_step (int): Minimum diffusion timestep.
+        max_step (int): Maximum diffusion timestep.
+        guidance_scale (float): Classifier-free guidance weight.
+        tokenizer (CLIPTokenizer): Tokenizer from SD.
+        text_encoder (CLIPTextModel): Text encoder from SD.
+        unet (UNet2DConditionModel): UNet from SD.
+        vae (AutoencoderKL): Variational autoencoder from SD.
+        scheduler (SchedulerMixin): Scheduler for diffusion control.
     """
-    Wrapper for Stable Diffusion
-    """
 
-    def __init__(self, device, dtype):
-       """Init the Image Diffusion model"""
-       super().__init__()
-       self.device = device
-       self.dtype = dtype
-       self.min_time_step = 0.2
-       self.max_time_step = 0.8
+    def __init__(
+        self,
+        t_range: Tuple[float, float],
+        guidance_scale: float,
+        device: torch.device,
+        dtype: torch.dtype,
+    ):
+        """Initialize guidance components from StableDiffusionPipeline.
 
-       logging.info("Loading Stable Diffusion...")
+        Args:
+            t_range: Diffusion sampling interval in [0, 1].
+            guidance_scale: Classifier-free guidance weight.
+            device: Device where guidance lives.
+            dtype: Precision of guidance.
+        """
+        super().__init__()
 
-       key = "Whatever"
+        # Set hardware
+        self.device = device
+        self.dtype = dtype
 
-       self.model = StableDiffusionPipeline.from_pretrained(key, torch_dtype=self.dtype)
-       self.model.to(self.device)
+        # Extract components from SD
+        logging.info("Loading Stable Diffusion pipeline...")
 
-       self.tokenizer = self.model.tokenizer
-       self.unet = self.model.unet
-       self.scheduler = DDIMScheduler(
-           model=self.model,
-           subfolder="whatever",
-           dtype=self.dtype
-       )
-       logging.info("Stable Diffusion Loaded")
-    
-    def text_embed(self, prompt, neg=""):
-        text_emb, uncond = self.model.encode_prompt(prompt, negative_prompt=neg, device=self.device)
-        text_emb = torch.cat([uncond, text_emb], dim=1)
-        return text_emb
-    
-    # [TODO] implement/fix the function
-    def sds_loss(self, text_emb, guidance_scale=7.5, grad_scale=1.0):
-        """Compute the Score Distillation Sampling (SDS) loss."""
-        # Random timestep selection within the range
-        #[TODO] need to check the *1000
-        #
-        timesteps = torch.randint(int(self.min_time_step * 1000), int(self.max_time_step * 1000), (1,), device=self.device)
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-2-1-base", torch_dtype=self.dtype
+        ).to(self.device)
 
-        # Generate a noise tensor with the same shape as the U-Net's input
-        noise = torch.randn_like(text_emb, device=self.device)
+        self.tokenizer = pipe.tokenizer
+        self.text_encoder = pipe.text_encoder
 
-        # Add noise to the latent representation
-        noisy_latents = text_emb + noise * self.scheduler.get_alpha(timesteps).sqrt()
+        self.unet = pipe.unet
+        self.vae = pipe.vae
 
-        # Calculate the score prediction
-        with torch.no_grad():
-            predicted_noise = self.unet(noisy_latents, timesteps, encoder_hidden_states=text_emb).sample
+        # NOTE: May need to change to DDIM
+        self.scheduler = pipe.scheduler
 
-        # Compute the SDS loss
-        sds_loss = F.mse_loss(predicted_noise, noise) * grad_scale
+        logging.info("Stable Diffusion loaded!")
+
+        # Set guidance parameters
+        num_train_steps = self.scheduler.config.num_train_timesteps
+        step_range = t_range * num_train_steps
+        self.min_step, self.max_step = int(step_range[0]), int(step_range[1])
+
+        self.guidance_scale = guidance_scale
+
+    def calculate_sds_loss(
+        self, latents: torch.Tensor, text_embeds: torch.Tensor
+    ) -> torch.Tensor:
+        """Calculate SDS loss.
+
+        Args:
+            latents: Latent tensor of shape (N, 4, 64, 64).
+            text_embeds: Text embed tensor of shape ?
+
+        Returns:
+            SDS loss tensor of shape ?
+        """
+        N, _, _, _ = latents.shape
+
+        # Add noise to latent
+        timesteps = torch.randint(
+            self.min_step, self.max_step + 1, (N,), device=self.device
+        )
+        noise = torch.randn_like(latents, device=self.device)
+        latents_noisy = self.scheduler.add_noise(latents, noise, timesteps)
+
+        # Calculate loss from predicted noise
+        # Weighing factor w(t) = variance_t = beta_t
+        # Reparameterization trick from DreamFusion paper
+        noise_pred = self.predict_noise(latents_noisy, timesteps, text_embeds)
+        weight_t = self.scheduler.betas[timesteps]
+        sds_loss = (weight_t * noise_pred * latents).sum()
+
         return sds_loss
 
+    def init_latents(self, batch_size: int) -> torch.Tensor:
+        """Create new latents.
 
-    # [NOTE] Encode/decode may need scaling factors
-    @torch.no_grad
-    def latent_to_img(self, latents):
-        return self.model.decode_latents(latents).images[0]
+        Args:
+            batch_size: Number of requested latents
+
+        Returns:
+            New latent tensor of shape (batch_size, 4, 64, 64)
+        """
+        latents = torch.rand(batch_size, 4, 64, 64, dtype=self.dtype)
+        return nn.Parameter(latents)
 
     @torch.no_grad
-    def img_to_latent(self, img):
-        return self.model.vae.encode(img).latent_dist.sample()
+    def predict_noise(
+        self,
+        latents_noisy: torch.Tensor,
+        timesteps: torch.IntTensor,
+        text_embeds: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict noise with classifier-free guidance.
+
+        Args:
+            latents_noisy: Noisy latent tensor of shape (N, 4, 64, 64)
+            timesteps: Timestep tensor of shape (N,)
+            text_embeds: Text embed tensor of shape ?
+
+        Returns:
+            Predicted noise tensor of shape (N, 4, 64, 64)
+        """
+
+        # Get unconditioned and conditioned noise
+        latents_dup = torch.cat([latents_noisy, latents_noisy], dim=0)
+        timesteps_dup = torch.cat([timesteps, timesteps], dim=0)
+
+        noise_pred_combined = self.unet(
+            latents_dup, timesteps_dup, encoder_hidden_states=text_embeds
+        ).sample
+        noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2)
+
+        # Classifier-free weighing
+        noise_pred = noise_pred_uncond + self.guidance_scale * (
+            noise_pred_cond - noise_pred_uncond
+        )
+        return noise_pred
+
+    @torch.no_grad
+    def encode_text(self, prompt: str) -> torch.Tensor:
+        """Embed text for guidance.
+
+        Args:
+            prompt: Guiding prompt
+
+        Returns:
+            Text embed tensor of shape ?
+        """
+        input_ids = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            return_tensors="pt",
+        ).input_ids.to(self.device)
+        text_embeds = self.text_encoder(input_ids)[0]
+        return text_embeds
+
+    @torch.no_grad
+    def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        """Convert latents to images.
+
+        Args:
+            latents: Latent tensor of shape (N, 4, 64, 64)
+
+        Returns:
+            Image tensor of shape (N, 3, 512, 512)
+        """
+        latents_scaled = latents / self.vae.config.scaling_factor
+        vae_out = self.vae.decode(latents_scaled).sample
+        imgs = ((vae_out + 1) / 2).clamp(0, 1)  # Clamp for numerical stability
+        return imgs
+
+    @torch.no_grad
+    def encode_imgs(self, imgs: torch.Tensor) -> torch.Tensor:
+        """Convert images to latents.
+
+        Args:
+            imgs: Image tensor of shape (N, 3, 512, 512)
+
+        Returns:
+            Latent tensor of shape (N, 4, 64, 64)
+        """
+        imgs_scaled = imgs * 2 - 1
+        vae_out = self.vae.encode(imgs_scaled).latent_dist.sample()
+        latents = vae_out * self.vae.config.scaling_factor
+        return latents
