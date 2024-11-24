@@ -1,3 +1,3 @@
-from guidance.stable import StableGuide
+from guidance.StableGuide import StableGuide
 
 GuideDict = {"StableGuide": StableGuide}

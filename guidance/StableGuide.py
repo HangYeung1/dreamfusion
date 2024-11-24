@@ -61,13 +61,14 @@ class StableGuide(nn.Module):
 
         # NOTE: May need to change to DDIM
         self.scheduler = pipe.scheduler
+        self.betas = self.scheduler.betas.to(self.device)
 
         logging.info("Stable Diffusion loaded!")
 
         # Set guidance parameters
         num_train_steps = self.scheduler.config.num_train_timesteps
-        step_range = t_range * num_train_steps
-        self.min_step, self.max_step = int(step_range[0]), int(step_range[1])
+        step_range = [int(t * num_train_steps) for t in t_range]
+        self.min_step, self.max_step = step_range
 
         self.guidance_scale = guidance_scale
 
@@ -96,7 +97,7 @@ class StableGuide(nn.Module):
         # Weighing factor w(t) = variance_t = beta_t
         # Reparameterization trick from DreamFusion paper
         noise_pred = self.predict_noise(latents_noisy, timesteps, text_embeds)
-        weight_t = self.scheduler.betas[timesteps]
+        weight_t = self.betas[timesteps]
         sds_loss = (weight_t * noise_pred * latents).sum()
 
         return sds_loss
@@ -105,13 +106,17 @@ class StableGuide(nn.Module):
         """Create new latents.
 
         Args:
-            batch_size: Number of requested latents
+            batch_size: Number of requested latents.
 
         Returns:
-            New latent tensor of shape (batch_size, 4, 64, 64)
+            New latent tensor of shape (batch_size, 4, 64, 64).
         """
-        latents = torch.rand(batch_size, 4, 64, 64, dtype=self.dtype)
-        return nn.Parameter(latents)
+        return nn.Parameter(
+            torch.rand(
+                batch_size, 4, 64, 64, dtype=self.dtype, device=self.device
+            ),
+            requires_grad=True,
+        )
 
     @torch.no_grad
     def predict_noise(
@@ -123,20 +128,23 @@ class StableGuide(nn.Module):
         """Predict noise with classifier-free guidance.
 
         Args:
-            latents_noisy: Noisy latent tensor of shape (N, 4, 64, 64)
-            timesteps: Timestep tensor of shape (N,)
+            latents_noisy: Noisy latent tensor of shape (N, 4, 64, 64).
+            timesteps: Timestep tensor of shape (N,).
             text_embeds: Text embed tensor of shape ?
 
         Returns:
-            Predicted noise tensor of shape (N, 4, 64, 64)
+            Predicted noise tensor of shape (N, 4, 64, 64).
         """
 
         # Get unconditioned and conditioned noise
         latents_dup = torch.cat([latents_noisy, latents_noisy], dim=0)
         timesteps_dup = torch.cat([timesteps, timesteps], dim=0)
+        text_embeds_dup = torch.cat(
+            [torch.zeros_like(text_embeds), text_embeds], dim=0
+        )
 
         noise_pred_combined = self.unet(
-            latents_dup, timesteps_dup, encoder_hidden_states=text_embeds
+            latents_dup, timesteps_dup, encoder_hidden_states=text_embeds_dup
         ).sample
         noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2)
 
@@ -151,7 +159,7 @@ class StableGuide(nn.Module):
         """Embed text for guidance.
 
         Args:
-            prompt: Guiding prompt
+            prompt: Guiding prompt.
 
         Returns:
             Text embed tensor of shape ?
@@ -170,10 +178,10 @@ class StableGuide(nn.Module):
         """Convert latents to images.
 
         Args:
-            latents: Latent tensor of shape (N, 4, 64, 64)
+            latents: Latent tensor of shape (N, 4, 64, 64).
 
         Returns:
-            Image tensor of shape (N, 3, 512, 512)
+            Image tensor of shape (N, 3, 512, 512).
         """
         latents_scaled = latents / self.vae.config.scaling_factor
         vae_out = self.vae.decode(latents_scaled).sample
