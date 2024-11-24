@@ -1,0 +1,8 @@
+prompt: Golden Retriever wearing aviator sunglasses
+guide: StableGuide
+iterations: 1000
+lr: 0.01
+t_range: 0.02,0.98
+guidance_scale: 1000
+device: cuda
+dtype: float32
