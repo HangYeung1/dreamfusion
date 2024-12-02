@@ -4,6 +4,7 @@ import numpy as np
 import torch.nn as nn
 from tqdm import tqdm
 import torch.nn.functional as F
+import matplotlib.animation as animation
 
 rawData = np.load("tiny_nerf_data.npz",allow_pickle=True)
 images = rawData["images"]
@@ -220,7 +221,7 @@ def render(model, rays_o, rays_d, near, far, n_samples, rand=False):
 
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.])).to(device)
 
-def train(model, optimizer, n_iters=100):
+def train(model, optimizer, n_iters=3000):
   """
   Train the Neural Radiance Field (NeRF) model. This function performs training over a specified number of iterations,
   updating the model parameters to minimize the difference between rendered and actual images.
@@ -234,7 +235,7 @@ def train(model, optimizer, n_iters=100):
   psnrs = []
   iternums = []
 
-  plot_step = 100
+  plot_step = 500
   n_samples = 64   # Number of samples along each ray.
 
   for i in tqdm(range(n_iters + 1)):
@@ -306,9 +307,9 @@ def render_rotating_nerf(model, H, W, focal, poses, n_samples, near=2., far=6., 
     for i in range(n_frames):
         angle = 2 * np.pi * i / n_frames
         rotation_matrix = torch.tensor([
-            [np.cos(angle), 0, np.sin(angle), 0],
-            [0, 1, 0, 0],
-            [-np.sin(angle), 0, np.cos(angle), 0],
+            [np.cos(angle), -np.sin(angle), 0, 0],
+            [np.sin(angle), np.cos(angle), 0, 0],
+            [0, 0, 1, 0],
             [0, 0, 0, 1]
         ], dtype=torch.float32).to(device)
         pose = torch.matmul(rotation_matrix, poses[0])
@@ -347,15 +348,22 @@ def display_renderings():
 
         # Render rotating NeRF
         rotating_images = render_rotating_nerf(nerf, H, W, focal, poses, n_samples=64)
-        for i, img in enumerate(rotating_images):
-            plt.imshow(img)
-            plt.title(f'Rotation Frame {i}')
-            plt.show()
 
-#nerf = VeryTinyNerfModel()
-#nerf = nn.DataParallel(nerf).to(device)
-#optimizer = torch.optim.Adam(nerf.parameters(), lr=5e-3, eps = 1e-7)
-#train(nerf, optimizer)
+        fig = plt.figure()
+        im = plt.imshow(rotating_images[0])
+
+        def update(frame):
+            im.set_array(rotating_images[frame])
+            return [im]
+
+        ani = animation.FuncAnimation(fig, update, frames=len(rotating_images), interval=1000/30)
+        ani.save('rotating_video.mp4', writer='ffmpeg', fps=30)
+        plt.show()
+
+# nerf = VeryTinyNerfModel()
+# nerf = nn.DataParallel(nerf).to(device)
+# optimizer = torch.optim.Adam(nerf.parameters(), lr=5e-3, eps = 1e-7)
+# train(nerf, optimizer)
 display_renderings()
 
 
