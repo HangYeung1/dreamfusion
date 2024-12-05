@@ -1,71 +1,44 @@
 import argparse
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Tuple
 
 import torch
 import yaml
 
-from guidance.GuideDict import GuideDict
+from guidance.GuideDict import GuideDict, GuideList
 
 
 @dataclass
-class SDSConfig:
+class Config:
     """Diffusion Configuration Data Class.
 
     Attributes:
+        mode (str): Type of SDS.
         prompt (str): Guiding prompt.
+        negative_prompt (str): Negative prompt.
         guide (GuideType): Guidance model class
         iterations (int): Number of training iterations.
         lr (float): SDS learning rate.
         t_range (float): Diffusion sampling interval in [0, 1].
         guidance_scale (float): Classifier-free guidance weight.
+        output_path (Path): Checkpoint and file output path
         device (torch.device): Device where training occurs.
         dtype (torch.dtype): Precision of training.
     """
 
+    mode: str
     prompt: str
+    negative_prompt: str
     guide: type
     iterations: int
     lr: float
     t_range: float
     guidance_scale: float
+    output_path: Path
     device: torch.device
     dtype: torch.dtype
-
-
-def parse_positive_int(val_str: str) -> int:
-    """Parse positive integer from string."""
-    try:
-        val = int(val_str)
-        assert val > 0
-        return val
-    except (AssertionError, TypeError):
-        raise argparse.ArgumentTypeError(
-            f"{val_str} isn't a positive integer."
-        )
-
-
-def parse_positive_float(val_str) -> int:
-    """Parse positive float from string."""
-    try:
-        val = float(val_str)
-        assert val > 0
-        return val
-    except (AssertionError, TypeError):
-        raise argparse.ArgumentTypeError(f"{val_str} isn't a positive float.")
-
-
-def parse_guide(guide_str: str) -> type:
-    """Parse GuideType from guide class name."""
-
-    try:
-        guide = GuideDict.get(guide_str)
-        assert guide
-        return guide
-    except AssertionError:
-        raise argparse.ArgumentTypeError(
-            f"{guide_str} isn't the name of a guidance class."
-        )
 
 
 def parse_t_range(range_str: str) -> Tuple[float, float]:
@@ -73,36 +46,11 @@ def parse_t_range(range_str: str) -> Tuple[float, float]:
 
     try:
         t_range = range_str.split(",")
-        assert len(t_range) == 2
         t_range = [float(t) for t in t_range]
-        assert t_range[0] < t_range[1]
+        assert len(t_range) == 2
         return t_range
     except (TypeError, AssertionError):
-        raise argparse.ArgumentTypeError(
-            f'{range_str} isn\'t a non-empty range "float,float".'
-        )
-
-
-def parse_device(device_str: str) -> torch.device:
-    """Parse torch device from device name."""
-
-    try:
-        return torch.device(device_str)
-    except RuntimeError:
-        raise argparse.ArgumentTypeError(
-            f"{device_str} isn't a valid torch device."
-        )
-
-
-def parse_dtype(dtype_str: str) -> torch.dtype:
-    """Parse torch dtype from dtype name."""
-
-    try:
-        return getattr(torch, dtype_str)
-    except AttributeError:
-        raise argparse.ArgumentTypeError(
-            f"{dtype_str} isn't a valid torch data type."
-        )
+        raise argparse.ArgumentTypeError(f'{range_str} isn\'t a range "float,float".')
 
 
 def yaml_to_args(yaml_path: str) -> List[str]:
@@ -111,7 +59,7 @@ def yaml_to_args(yaml_path: str) -> List[str]:
     try:
         with open(yaml_path) as file:
             yaml_dict = yaml.safe_load(file)
-            yaml_list = ["cli"]
+            yaml_list = []
             for key, value in yaml_dict.items():
                 yaml_list.append(str(f"--{key}"))
                 yaml_list.append(str(value))
@@ -120,113 +68,67 @@ def yaml_to_args(yaml_path: str) -> List[str]:
         raise argparse.ArgumentTypeError("Invalid YAML formatting.")
 
 
-def parse_args(arg_list: None | List[str] = None) -> SDSConfig:
+def parse_args(arg_list: None | List[str] = None) -> Config:
     """Parse SDS configuration from argparse argument list.
-
-    The parser has two modes: cli and yaml. In cli mode, all SDS configuration
-    options are passed as flags from the command line. In yaml mode, all options
-    are passed through a pre-existing YAML file. For more information, run the
-    parser with help flags.
 
     Args:
         arg_list (List[str], optional): Argument list to parse. Defaults to
             options passed from command line.
 
     Returns:
-        Converted SDSConfig data class.
+        Converted Config data class.
     """
 
-    # Define main parser args
-    parser = argparse.ArgumentParser(description="Configuration for SDS.")
-    subparsers = parser.add_subparsers(
-        description="""There are two methods to configure SDS: pass arguments 
-        through the command line (cli) or pass arguments from a pre-made YAML 
-        file (yaml).""",
-        help="select cli or yaml to pass SDS arguments.",
-        required=True,
-    )
+    # Define parser
+    parser = argparse.ArgumentParser()
 
-    # Define cli subparser args
-    cli_parser = subparsers.add_parser(
-        "cli",
-        description="Configure SDS by passing each flag in the command line.",
-        help="configuration via CLI.",
-    )
-    cli_parser.add_argument(
-        "--prompt", type=str, help="guiding prompt.", required=True
-    )
-    cli_parser.add_argument(
-        "--guide",
-        type=parse_guide,
-        help="name of diffusion guidance class.",
-        required=True,
-    )
-    cli_parser.add_argument(
-        "--iterations",
-        type=parse_positive_int,
-        help="number of training iterations.",
-        required=True,
-    )
-    cli_parser.add_argument(
-        "--lr",
-        type=parse_positive_float,
-        help="training learning rate.",
-        required=True,
-    )
-    cli_parser.add_argument(
-        "--t_range",
-        type=parse_t_range,
-        help='"float,float" of diffusion time range.',
-        required=True,
-    )
-    cli_parser.add_argument(
-        "--guidance_scale",
-        type=parse_positive_float,
-        help="float of classifier free guidance scale.",
-        required=True,
-    )
-    cli_parser.add_argument(
+    parser.add_argument("--mode", type=str, default="2d")
+    parser.add_argument("--prompt", type=str, default="A dog")
+    parser.add_argument("--negative_prompt", type=str, default="")
+    parser.add_argument("--guide", type=str, choices=GuideList, default="StableGuide")
+    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--t_range", type=parse_t_range, default=(0.02, 0.98))
+    parser.add_argument("--guidance_scale", type=float, default=25)
+    parser.add_argument("--output_path", type=str, default="/output")
+
+    parser.add_argument(
         "--device",
-        type=parse_device,
-        default=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-        help="torch device of training.",
-    )
-    cli_parser.add_argument(
-        "--dtype",
-        type=parse_dtype,
-        default=torch.float16 if torch.cuda.is_available() else torch.float32,
-        help="torch data type of training.",
-    )
-
-    # Define yaml subparser args
-    yaml_parser = subparsers.add_parser(
-        "yaml",
-        description="Configure SDS by passing preset flags from a YAML file.",
-        help="configuration via YAML",
-    )
-    yaml_parser.add_argument(
-        "yaml_path",
         type=str,
-        help="path to YAML config file.",
+        choices=["cpu", "cuda"],
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["float16", "float32", "float64"],
+        default="float16" if torch.cuda.is_available() else "float32",
     )
 
-    # Parse the arguments
-    args = parser.parse_args(args=arg_list)
-    if hasattr(args, "yaml_path"):
-        yaml_args = yaml_to_args(args.yaml_path)
-        args = parser.parse_args(args=yaml_args)
+    parser.add_argument("--yaml", type=str)
 
-    return SDSConfig(
+    # Parse arguments and return
+    args = parser.parse_args(args=arg_list)
+    if hasattr(args, "yaml"):
+        logging.info("Overriding CLI args with YAML")
+        yaml_arg_list = yaml_to_args(args.yaml)
+        args = parser.parse_args(args=yaml_arg_list)
+
+    return Config(
+        mode=args.mode,
         prompt=args.prompt,
-        guide=args.guide,
+        negative_prompt=args.negative_prompt,
+        guide=GuideDict[args.guide],
         iterations=args.iterations,
         lr=args.lr,
         t_range=args.t_range,
         guidance_scale=args.guidance_scale,
-        device=args.device,
-        dtype=args.dtype,
+        output_path=Path(args.output_path),
+        device=torch.device(args.device),
+        dtype=getattr(torch, args.dtype),
     )
 
 
+# Run parser.py to test the parser
 if __name__ == "__main__":
     print(parse_args())
