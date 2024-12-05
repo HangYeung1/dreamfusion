@@ -20,6 +20,7 @@ class Config:
         negative_prompt (str): Negative prompt.
         guide (GuideType): Guidance model class
         iterations (int): Number of training iterations.
+        batch_size (int): Number of images to train
         lr (float): SDS learning rate.
         t_range (float): Diffusion sampling interval in [0, 1].
         guidance_scale (float): Classifier-free guidance weight.
@@ -33,6 +34,7 @@ class Config:
     negative_prompt: str
     guide: type
     iterations: int
+    batch_size: int
     lr: float
     t_range: float
     guidance_scale: float
@@ -87,6 +89,7 @@ def parse_args(arg_list: None | List[str] = None) -> Config:
     parser.add_argument("--negative_prompt", type=str, default="")
     parser.add_argument("--guide", type=str, choices=GuideList, default="StableGuide")
     parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--t_range", type=parse_t_range, default=(0.02, 0.98))
     parser.add_argument("--guidance_scale", type=float, default=25)
@@ -120,6 +123,7 @@ def parse_args(arg_list: None | List[str] = None) -> Config:
         negative_prompt=args.negative_prompt,
         guide=GuideDict[args.guide],
         iterations=args.iterations,
+        batch_size=args.batch_size,
         lr=args.lr,
         t_range=args.t_range,
         guidance_scale=args.guidance_scale,

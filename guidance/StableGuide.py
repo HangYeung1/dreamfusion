@@ -3,7 +3,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
-from diffusers import StableDiffusionPipeline
+from diffusers import DiffusionPipeline
 
 
 class StableGuide(nn.Module):
@@ -32,7 +32,7 @@ class StableGuide(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ):
-        """Initialize guidance components from StableDiffusionPipeline.
+        """Initialize guidance components from DiffusionPipeline.
 
         Args:
             t_range: Diffusion sampling interval in [0, 1].
@@ -49,17 +49,14 @@ class StableGuide(nn.Module):
         # Extract components from SD
         logging.info("Loading Stable Diffusion pipeline...")
 
-        pipe = StableDiffusionPipeline.from_pretrained(
+        pipe = DiffusionPipeline.from_pretrained(
             "stabilityai/stable-diffusion-2-1-base", torch_dtype=self.dtype
         ).to(self.device)
 
         self.tokenizer = pipe.tokenizer
         self.text_encoder = pipe.text_encoder
-
         self.unet = pipe.unet
         self.vae = pipe.vae
-
-        # NOTE: May need to change to DDIM
         self.scheduler = pipe.scheduler
         self.betas = self.scheduler.betas.to(self.device)
 
@@ -97,24 +94,22 @@ class StableGuide(nn.Module):
         # Weighing factor w(t) = variance_t = beta_t
         # Reparameterization trick from DreamFusion paper
         noise_pred = self.predict_noise(latents_noisy, timesteps, text_embeds)
-        weight_t = self.betas[timesteps]
+        weight_t = self.betas[timesteps].view(-1, 1, 1, 1).expand(-1, 4, 64, 64)
         sds_loss = (weight_t * noise_pred * latents).sum()
 
         return sds_loss
 
-    def init_latents(self, batch_size: int) -> torch.Tensor:
+    def init_latents(self, N: int) -> torch.Tensor:
         """Create new latents.
 
         Args:
-            batch_size: Number of requested latents.
+            N: Number of requested latents.
 
         Returns:
-            New latent tensor of shape (batch_size, 4, 64, 64).
+            New latent tensor of shape (N, 4, 64, 64).
         """
         return nn.Parameter(
-            torch.rand(
-                batch_size, 4, 64, 64, dtype=self.dtype, device=self.device
-            ),
+            torch.rand(N, 4, 64, 64, dtype=self.dtype, device=self.device),
             requires_grad=True,
         )
 
@@ -135,12 +130,17 @@ class StableGuide(nn.Module):
         Returns:
             Predicted noise tensor of shape (N, 4, 64, 64).
         """
+        N, _, _, _ = latents_noisy.shape
 
         # Get unconditioned and conditioned noise
         latents_dup = torch.cat([latents_noisy, latents_noisy], dim=0)
         timesteps_dup = torch.cat([timesteps, timesteps], dim=0)
         text_embeds_dup = torch.cat(
-            [torch.zeros_like(text_embeds), text_embeds], dim=0
+            [
+                torch.cat([torch.zeros_like(text_embeds)] * N, dim=0),
+                torch.cat([text_embeds] * N, dim=0),
+            ],
+            dim=0,
         )
 
         noise_pred_combined = self.unet(
