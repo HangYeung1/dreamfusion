@@ -23,12 +23,12 @@ def get_init(args: Config):
     )
 
 
-def get_images(trained: torch.Tensor, guide: guidance.GuideTypes):
+def get_images(trained: torch.Tensor, model: guidance.GuideTypes):
     """Convert trained tensors to PIL images."""
     images = None
-    match type(guide):
+    match type(model):
         case guidance.StableGuide:
-            images = guide.decode_latents(trained)
+            images = model.decode_latents(trained)
         case _:
             images = trained
 
@@ -53,7 +53,7 @@ def train2d(args: Config):
     )
 
     latents = get_init(args)
-    optimizer = torch.optim.Adam([latents], lr=args.lr)
+    optimizer = torch.optim.Adam([latents], lr=args.lr, eps=1e-4)
     text_embeds = model.encode_text(args.prompt)
 
     for _ in tqdm(range(args.iterations), desc="Optimizing images...:"):
