@@ -99,20 +99,6 @@ class StableGuide(nn.Module):
 
         return sds_loss
 
-    def init_latents(self, N: int) -> torch.Tensor:
-        """Create new latents.
-
-        Args:
-            N: Number of requested latents.
-
-        Returns:
-            New latent tensor of shape (N, 4, 64, 64).
-        """
-        return nn.Parameter(
-            torch.rand(N, 4, 64, 64, dtype=self.dtype, device=self.device),
-            requires_grad=True,
-        )
-
     @torch.no_grad
     def predict_noise(
         self,

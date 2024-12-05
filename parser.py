@@ -7,7 +7,7 @@ from typing import List, Tuple
 import torch
 import yaml
 
-from guidance.GuideDict import GuideDict, GuideList
+from guidance import GuideDict, GuideList
 
 
 @dataclass
@@ -84,7 +84,7 @@ def parse_args(arg_list: None | List[str] = None) -> Config:
     # Define parser
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--mode", type=str, default="2d")
+    parser.add_argument("--mode", type=str, choices=["2D", "3D"], default="2D")
     parser.add_argument("--prompt", type=str, default="A dog")
     parser.add_argument("--negative_prompt", type=str, default="")
     parser.add_argument("--guide", type=str, choices=GuideList, default="StableGuide")
