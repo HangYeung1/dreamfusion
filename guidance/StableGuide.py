@@ -58,7 +58,7 @@ class StableGuide(nn.Module):
         self.unet = pipe.unet
         self.vae = pipe.vae
         self.scheduler = pipe.scheduler
-        self.betas = self.scheduler.betas.to(self.device)
+        self.alphas = self.scheduler.alphas_cumprod.to(self.device)
 
         logging.info("Stable Diffusion loaded!")
 
@@ -94,8 +94,9 @@ class StableGuide(nn.Module):
         # Weighing factor w(t) = variance_t = beta_t
         # Reparameterization trick from DreamFusion paper
         noise_pred = self.predict_noise(latents_noisy, timesteps, text_embeds)
-        weight_t = self.betas[timesteps].view(-1, 1, 1, 1).expand(-1, 4, 64, 64)
-        sds_loss = (weight_t * noise_pred * latents).sum()
+        weight_t = (1 - self.alphas[timesteps]).view(-1, 1, 1, 1).expand(-1, 4, 64, 64)
+        gradient = weight_t * (noise_pred - noise)
+        sds_loss = (gradient * latents).sum()
 
         return sds_loss
 
