@@ -1,12 +1,12 @@
-import torch
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
-from nerf.nerf import NeRF
+import torch
 import torch.nn as nn
-import matplotlib.animation as animation
-from guidance import StableGuide
-
 from tqdm import tqdm
+
+from guidance import IFGuide
+from nerf.nerf import NeRF
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -16,8 +16,11 @@ else:
     device = torch.device("cpu")
 
 
-focal = 138
-height, width = 512, 512
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+
+focal = 135
+height, width = 64, 64
 
 
 def render_rotating_nerf(
@@ -37,14 +40,7 @@ def render_rotating_nerf(
         ).to(device)
         pose = torch.matmul(
             rotation_matrix,
-            torch.Tensor(
-                [
-                    [-9.9990219e-01, 4.1922452e-03, -1.3345719e-02, -5.3798322e-02],
-                    [-1.3988681e-02, -2.9965907e-01, 9.5394367e-01, 3.8454704e00],
-                    [-4.6566129e-10, 9.5403719e-01, 2.9968831e-01, 1.2080823e00],
-                    [0.0000000e00, 0.0000000e00, 0.0000000e00, 1.0000000e00],
-                ]
-            ).to(device),
+            get_camera_pose(torch.tensor(0), torch.tensor(0), 4).to(device),
         )
         rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
         rgb, _ = model.module.render(model.module, rays_o, rays_d, near, far, n_samples)
@@ -55,9 +51,9 @@ def render_rotating_nerf(
 def visualize(checkpoint_path):
     nerf = NeRF().to(device)
     nerf = nn.DataParallel(nerf).to(device)
-    ckpt = torch.load(f"{checkpoint_path}/ckpt.pth")
+    ckpt = torch.load(f"{checkpoint_path}/ckpt_final.pth")
     nerf.module.load_state_dict(ckpt)
-    height, width = 100, 100
+    height, width = 64, 64
     with torch.no_grad():
         rotating_images = render_rotating_nerf(nerf, height, width, focal, n_samples=64)
 
@@ -75,113 +71,114 @@ def visualize(checkpoint_path):
         plt.show()
 
 
-def random_camera_pose_with_rotation(radius=1.0):
-    theta = torch.acos(2 * torch.rand(1) - 1)
-    phi = 2 * torch.pi * torch.rand(1)
+@torch.no_grad
+def get_camera_pose(theta, phi, r=1.0):
+    x = r * torch.sin(phi) * torch.cos(theta)
+    y = r * torch.sin(phi) * torch.sin(theta)
+    z = r * torch.cos(phi)
 
-    x = radius * torch.sin(theta) * torch.cos(phi)
-    y = radius * torch.sin(theta) * torch.sin(phi)
-    z = radius * torch.cos(theta)
-    position = torch.stack([x, y, z]).view(3, 1)
+    # Normalize the forward direction vector
+    forward = torch.tensor([x, y, z], dtype=torch.float32)
+    forward = forward / torch.linalg.norm(forward)
 
-    yaw = 2 * torch.pi * torch.rand(1)
-    pitch = torch.acos(2 * torch.rand(1) - 1) - torch.pi / 2
-    roll = 2 * torch.pi * torch.rand(1)
+    # Default right and up vectors
+    right = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+    up = torch.linalg.cross(right, forward)
 
-    R_yaw = torch.tensor(
-        [
-            [torch.cos(yaw), -torch.sin(yaw), 0],
-            [torch.sin(yaw), torch.cos(yaw), 0],
-            [0, 0, 1],
-        ]
+    # Recompute right to ensure orthogonality
+    right = torch.linalg.cross(up, forward)
+
+    # Normalize right and up
+    right = right / torch.linalg.norm(right)
+    up = up / torch.linalg.norm(up)
+
+    # Build the 4x4 camera matrix
+    camera_matrix = torch.eye(4, dtype=torch.float32)
+    camera_matrix[0, :3] = right
+    camera_matrix[1, :3] = up
+    camera_matrix[2, :3] = -forward
+
+    # Translation: Position of the camera in space
+    camera_matrix[0, 3] = -torch.dot(
+        right, torch.tensor([x, y, z], dtype=torch.float32)
     )
-    R_pitch = torch.tensor(
-        [
-            [torch.cos(pitch), 0, torch.sin(pitch)],
-            [0, 1, 0],
-            [-torch.sin(pitch), 0, torch.cos(pitch)],
-        ]
+    camera_matrix[1, 3] = -torch.dot(up, torch.tensor([x, y, z], dtype=torch.float32))
+    camera_matrix[2, 3] = torch.dot(
+        forward, torch.tensor([x, y, z], dtype=torch.float32)
     )
-    R_roll = torch.tensor(
-        [
-            [1, 0, 0],
-            [0, torch.cos(roll), -torch.sin(roll)],
-            [0, torch.sin(roll), torch.cos(roll)],
-        ]
-    )
-    rotation_matrix = R_yaw @ R_pitch @ R_roll
 
-    transformation_matrix = torch.eye(4)
-    transformation_matrix[:3, :3] = rotation_matrix
-    transformation_matrix[:3, 3] = position.view(3)
-
-    return transformation_matrix
+    return camera_matrix
 
 
-def train(checkpoint_path, n_iters=1000):
+def train(checkpoint_path, n_iters=3000):
     model = NeRF().to(device)
     model = nn.DataParallel(model).to(device)
-    optimizer = torch.optim.Adam(model.module.parameters(), lr=5e-3, eps=1e-7)
-
-    sd = StableGuide(
-        t_range=(0.02, 0.98), guidance_scale=15, device=device, dtype=torch.float16
+    optimizer = torch.optim.Adam(
+        model.module.parameters(), lr=0.001, eps=1e-4, weight_decay=0
     )
 
-    pos_embeds = sd.encode_text("An apple")
-    neg_embeds = sd.encode_text("")
+    guide = IFGuide(
+        t_range=(0.02, 0.98), guidance_scale=10, device=device, dtype=torch.float16
+    )
 
-    plot_step = 500
+    pos_embeds = guide.encode_text("A DSLR photo of an apple")
+    neg_embeds = guide.encode_text("")
+
+    plot_step = 250
     n_samples = 64
 
-    for i in tqdm(range(n_iters + 1)):
-        pose = random_camera_pose_with_rotation().to(device)
+    for i in tqdm(range(n_iters)):
+        theta = torch.rand(1) * 2 * torch.pi
+        phi = torch.rand(1) * torch.pi
+        pose = get_camera_pose(theta, phi, 4).to(device)
 
         rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
-        rgb, _ = model.module.render(
-            model.module,
-            rays_o,
-            rays_d,
-            near=2.0,
-            far=6.0,
-            n_samples=n_samples,
-            rand=True,
+        rgb = (
+            model.module.render(
+                model.module,
+                rays_o,
+                rays_d,
+                near=2,
+                far=6,
+                n_samples=n_samples,
+                rand=True,
+            )[0]
+            .permute(1, 2, 0)
+            .view(1, 3, 64, 64)
+            .half()
         )
 
         optimizer.zero_grad()
-        loss = sd.calculate_sds_loss(sd.encode_images(rgb), pos_embeds, neg_embeds)
+        loss = guide.calculate_sds_loss(rgb, pos_embeds, neg_embeds)
         loss.backward()
         optimizer.step()
 
         if i % plot_step == 0:
-            torch.save(model.module.state_dict(), f"{checkpoint_path}/ckpt.pth")
+            torch.save(model.module.state_dict(), f"{checkpoint_path}/ckpt{i}.pth")
+
             with torch.no_grad():
-                rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
-                rgb, depth = model.module.render(
+                rays_o, rays_d = model.module.define_rays(
+                    height,
+                    width,
+                    focal,
+                    get_camera_pose(torch.tensor(0), torch.tensor(0), 4).to(device),
+                )
+                test, _ = model.module.render(
                     model.module,
                     rays_o,
                     rays_d,
-                    near=2.0,
-                    far=6.0,
+                    near=2,
+                    far=6,
                     n_samples=n_samples,
+                    rand=True,
                 )
-
-                plt.figure(figsize=(9, 3))
-
-                plt.subplot(131)
-                picture = rgb.cpu()
-                plt.imshow(picture)
-                plt.title(f"RGB Iter {i}")
-
-                plt.subplot(132)
-                picture = depth.cpu() * (rgb.cpu().mean(-1) > 1e-2)
-                plt.imshow(picture, cmap="gray")
-                plt.title(f"Depth Iter {i}")
-
+                plt.figure()
+                plt.imshow(test.detach().cpu())
                 plt.show()
+
+    torch.save(model.module.state_dict(), f"{checkpoint_path}/ckpt_final.pth")
 
 
 checkpoint = "output"
 train(checkpoint)
-# if not os.path.exists(f"{checkpoint}/ckpt.pth"):
-#     train(checkpoint)
 # visualize(checkpoint)

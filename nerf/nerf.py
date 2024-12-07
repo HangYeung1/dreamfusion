@@ -18,6 +18,8 @@ class NeRF(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Linear(3 + 3 * 2 * num_encoding_functions, filter_size))
         self.layers.append(nn.Linear(filter_size, filter_size))
+        self.layers.append(nn.Linear(filter_size, filter_size))
+        self.layers.append(nn.Linear(filter_size, filter_size))
         self.output = nn.Linear(filter_size, 4)
 
     def init_weights(self):

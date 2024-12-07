@@ -90,7 +90,6 @@ class StableGuide(BaseGuide):
         images = (vae_out / 2 + 0.5).clamp(0, 1)
         return images
 
-    @torch.no_grad
     def encode_images(self, images: torch.Tensor) -> torch.Tensor:
         """Convert images tensor to training tensor.
 
