@@ -4,9 +4,9 @@ import numpy as np
 from nerf.nerf import NeRF
 import torch.nn as nn
 import matplotlib.animation as animation
+from guidance import StableGuide
 
 from tqdm import tqdm
-import os
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -15,23 +15,13 @@ elif torch.backends.mps.is_available():
 else:
     device = torch.device("cpu")
 
-rawData = np.load("tiny_nerf_data.npz", allow_pickle=True)
-images = rawData["images"]
-poses = rawData["poses"]
-focal = rawData["focal"]
-height, width = images.shape[1:3]
-height = int(height)
-width = int(width)
 
-testimg, testpose = images[99], poses[99]
-images = torch.Tensor(images).to(device)
-poses = torch.Tensor(poses).to(device)
-testimg = torch.Tensor(testimg).to(device)
-testpose = torch.Tensor(testpose).to(device)
+focal = 138
+height, width = 512, 512
 
 
 def render_rotating_nerf(
-    model, height, width, focal, poses, n_samples, near=2.0, far=6.0, n_frames=120
+    model, height, width, focal, n_samples, near=2.0, far=6.0, n_frames=120
 ):
     rendered_images = []
     for i in range(n_frames):
@@ -45,7 +35,17 @@ def render_rotating_nerf(
             ],
             dtype=torch.float32,
         ).to(device)
-        pose = torch.matmul(rotation_matrix, poses[0])
+        pose = torch.matmul(
+            rotation_matrix,
+            torch.Tensor(
+                [
+                    [-9.9990219e-01, 4.1922452e-03, -1.3345719e-02, -5.3798322e-02],
+                    [-1.3988681e-02, -2.9965907e-01, 9.5394367e-01, 3.8454704e00],
+                    [-4.6566129e-10, 9.5403719e-01, 2.9968831e-01, 1.2080823e00],
+                    [0.0000000e00, 0.0000000e00, 0.0000000e00, 1.0000000e00],
+                ]
+            ).to(device),
+        )
         rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
         rgb, _ = model.module.render(model.module, rays_o, rays_d, near, far, n_samples)
         rendered_images.append(rgb.cpu().numpy())
@@ -59,9 +59,7 @@ def visualize(checkpoint_path):
     nerf.module.load_state_dict(ckpt)
     height, width = 100, 100
     with torch.no_grad():
-        rotating_images = render_rotating_nerf(
-            nerf, height, width, focal, poses, n_samples=64
-        )
+        rotating_images = render_rotating_nerf(nerf, height, width, focal, n_samples=64)
 
         fig = plt.figure()
         im = plt.imshow(rotating_images[0])
@@ -77,18 +75,67 @@ def visualize(checkpoint_path):
         plt.show()
 
 
-def train(checkpoint_path, n_iters=3000):
+def random_camera_pose_with_rotation(radius=1.0):
+    theta = torch.acos(2 * torch.rand(1) - 1)
+    phi = 2 * torch.pi * torch.rand(1)
+
+    x = radius * torch.sin(theta) * torch.cos(phi)
+    y = radius * torch.sin(theta) * torch.sin(phi)
+    z = radius * torch.cos(theta)
+    position = torch.stack([x, y, z]).view(3, 1)
+
+    yaw = 2 * torch.pi * torch.rand(1)
+    pitch = torch.acos(2 * torch.rand(1) - 1) - torch.pi / 2
+    roll = 2 * torch.pi * torch.rand(1)
+
+    R_yaw = torch.tensor(
+        [
+            [torch.cos(yaw), -torch.sin(yaw), 0],
+            [torch.sin(yaw), torch.cos(yaw), 0],
+            [0, 0, 1],
+        ]
+    )
+    R_pitch = torch.tensor(
+        [
+            [torch.cos(pitch), 0, torch.sin(pitch)],
+            [0, 1, 0],
+            [-torch.sin(pitch), 0, torch.cos(pitch)],
+        ]
+    )
+    R_roll = torch.tensor(
+        [
+            [1, 0, 0],
+            [0, torch.cos(roll), -torch.sin(roll)],
+            [0, torch.sin(roll), torch.cos(roll)],
+        ]
+    )
+    rotation_matrix = R_yaw @ R_pitch @ R_roll
+
+    transformation_matrix = torch.eye(4)
+    transformation_matrix[:3, :3] = rotation_matrix
+    transformation_matrix[:3, 3] = position.view(3)
+
+    return transformation_matrix
+
+
+def train(checkpoint_path, n_iters=1000):
     model = NeRF().to(device)
     model = nn.DataParallel(model).to(device)
     optimizer = torch.optim.Adam(model.module.parameters(), lr=5e-3, eps=1e-7)
+
+    sd = StableGuide(
+        t_range=(0.02, 0.98), guidance_scale=15, device=device, dtype=torch.float16
+    )
+
+    pos_embeds = sd.encode_text("An apple")
+    neg_embeds = sd.encode_text("")
 
     plot_step = 500
     n_samples = 64
 
     for i in tqdm(range(n_iters + 1)):
-        images_idx = np.random.randint(images.shape[0])
-        target = images[images_idx]
-        pose = poses[images_idx]
+        pose = random_camera_pose_with_rotation().to(device)
+
         rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
         rgb, _ = model.module.render(
             model.module,
@@ -101,16 +148,14 @@ def train(checkpoint_path, n_iters=3000):
         )
 
         optimizer.zero_grad()
-        image_loss = torch.nn.functional.mse_loss(rgb, target)
-        image_loss.backward()
+        loss = sd.calculate_sds_loss(sd.encode_images(rgb), pos_embeds, neg_embeds)
+        loss.backward()
         optimizer.step()
 
         if i % plot_step == 0:
             torch.save(model.module.state_dict(), f"{checkpoint_path}/ckpt.pth")
             with torch.no_grad():
-                rays_o, rays_d = model.module.define_rays(
-                    height, width, focal, testpose
-                )
+                rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
                 rgb, depth = model.module.render(
                     model.module,
                     rays_o,
@@ -136,6 +181,7 @@ def train(checkpoint_path, n_iters=3000):
 
 
 checkpoint = "output"
-if not os.path.exists(f"{checkpoint}/ckpt.pth"):
-    train(checkpoint)
-visualize(checkpoint)
+train(checkpoint)
+# if not os.path.exists(f"{checkpoint}/ckpt.pth"):
+#     train(checkpoint)
+# visualize(checkpoint)
