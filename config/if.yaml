@@ -1,0 +1,13 @@
+mode: 2D
+prompt: A high quality photo of a dog
+negative_prompt: cropped, out of frame, morbid, mutilated, bizarre, corrupted, malformed, low quality, artifacts, watermark, signature
+guide: IFGuide
+iterations: 1000
+batch_size: 5
+lr: 0.01
+weight_decay: 0.2
+t_range: 0.02,0.98
+guidance_scale: 15
+output_path: output
+device: cuda
+dtype: float16

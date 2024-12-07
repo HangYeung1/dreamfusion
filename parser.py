@@ -15,17 +15,18 @@ class Config:
     """Diffusion Configuration Data Class.
 
     Attributes:
-        mode (str): Type of SDS.
+        mode (str): SDS domain.
         prompt (str): Guiding prompt.
         negative_prompt (str): Negative prompt.
-        guide (GuideType): Guidance model class
+        guide (GuideType): Guidance model class.
         iterations (int): Number of training iterations.
-        batch_size (int): Number of images to train
-        lr (float): SDS learning rate.
-        t_range (float): Diffusion sampling interval in [0, 1].
+        batch_size (int): Number of images to train.
+        lr (float): Adam learning rate.
+        weight_decay (float): Adam weight decay rate.
+        t_range (float): Diffusion sampling interval.
         guidance_scale (float): Classifier-free guidance weight.
-        output_path (Path): Checkpoint and file output path
-        device (torch.device): Device where training occurs.
+        output_path (Path): File output path.
+        device (torch.device): Device of training.
         dtype (torch.dtype): Precision of training.
     """
 
@@ -36,6 +37,7 @@ class Config:
     iterations: int
     batch_size: int
     lr: float
+    weight_decay: float
     t_range: float
     guidance_scale: float
     output_path: Path
@@ -49,9 +51,10 @@ def parse_t_range(range_str: str) -> Tuple[float, float]:
     try:
         t_range = range_str.split(",")
         t_range = [float(t) for t in t_range]
-        assert len(t_range) == 2
+        if not len(t_range) == 2:
+            raise TypeError
         return t_range
-    except (TypeError, AssertionError):
+    except TypeError:
         raise argparse.ArgumentTypeError(f'{range_str} isn\'t a range "float,float".')
 
 
@@ -73,7 +76,7 @@ def yaml_to_args(yaml_path: str) -> List[str]:
 def parse_args(arg_list: None | List[str] = None) -> Config:
     """Parse SDS configuration from argparse argument list.
 
-    Args:
+    Arguments:
         arg_list (List[str], optional): Argument list to parse. Defaults to
             options passed from command line.
 
@@ -91,9 +94,10 @@ def parse_args(arg_list: None | List[str] = None) -> Config:
     parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--t_range", type=parse_t_range, default=(0.02, 0.98))
-    parser.add_argument("--guidance_scale", type=float, default=25)
-    parser.add_argument("--output_path", type=str, default="/output")
+    parser.add_argument("--guidance_scale", type=float, default=10)
+    parser.add_argument("--output_path", type=str, default="output")
 
     parser.add_argument(
         "--device",
@@ -112,7 +116,7 @@ def parse_args(arg_list: None | List[str] = None) -> Config:
 
     # Parse arguments and return
     args = parser.parse_args(args=arg_list)
-    if hasattr(args, "yaml"):
+    if args.yaml:
         logging.info("Overriding CLI args with YAML")
         yaml_arg_list = yaml_to_args(args.yaml)
         args = parser.parse_args(args=yaml_arg_list)
@@ -125,6 +129,7 @@ def parse_args(arg_list: None | List[str] = None) -> Config:
         iterations=args.iterations,
         batch_size=args.batch_size,
         lr=args.lr,
+        weight_decay=args.weight_decay,
         t_range=args.t_range,
         guidance_scale=args.guidance_scale,
         output_path=Path(args.output_path),
