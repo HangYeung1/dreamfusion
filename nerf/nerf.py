@@ -15,20 +15,66 @@ class NeRF(nn.Module):
     def __init__(self, filter_size=128, num_encoding_functions=6):
         super().__init__()
 
-        self.layers = nn.ModuleList()
-        self.layers.append(nn.Linear(3 + 3 * 2 * num_encoding_functions, filter_size))
-        self.layers.append(nn.Linear(filter_size, filter_size))
-        self.layers.append(nn.Linear(filter_size, filter_size))
+        # Input layer (with positional encoding size)
+        input_dim = 3 + 3 * 2 * num_encoding_functions
+        self.input_layer = nn.Linear(input_dim, filter_size)
+
+        # Intermediate layers
+        self.layers = nn.ModuleList(
+            [nn.Linear(filter_size, filter_size) for _ in range(3)]
+        )
+
+        # First skip connection layer
+        self.skip_layer = nn.Linear(filter_size + input_dim, filter_size)
+
+        # Post-first-skip layers
+        self.post_skip_layers = nn.ModuleList(
+            [nn.Linear(filter_size, filter_size) for _ in range(2)]
+        )
+
+        # Second skip connection layer (before final output)
+        self.second_skip_layer = nn.Linear(filter_size + input_dim, filter_size)
+
+        # Output layer
         self.output = nn.Linear(filter_size, 4)
 
-    def init_weights(self):
-        for layer in self.layers:
-            torch.nn.init.kaiming_normal(layer.weight)
-        torch.nn.init.kaiming_normal(self.output.weight)
+    #     self.init_weights()
+
+    # def init_weights(self):
+    #     # Initialize all layers
+    #     for layer in self.layers:
+    #         nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+    #     for layer in self.post_skip_layers:
+    #         nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+    #     nn.init.kaiming_normal_(self.input_layer.weight, nonlinearity="relu")
+    #     nn.init.kaiming_normal_(self.skip_layer.weight, nonlinearity="relu")
+    #     nn.init.kaiming_normal_(self.second_skip_layer.weight, nonlinearity="relu")
+    #     nn.init.kaiming_normal_(self.output.weight, nonlinearity="linear")
 
     def forward(self, x):
+        # Store the original input for skip connections
+        x_encoded = x
+
+        # Input layer
+        x = F.relu(self.input_layer(x))
+
+        # First set of intermediate layers
         for layer in self.layers:
             x = F.relu(layer(x))
+
+        # First skip connection: concatenate input with current features
+        x = torch.cat([x, x_encoded], dim=-1)
+        x = F.relu(self.skip_layer(x))
+
+        # Post-first-skip layers
+        for layer in self.post_skip_layers:
+            x = F.relu(layer(x))
+
+        # Second skip connection: concatenate input with current features
+        x = torch.cat([x, x_encoded], dim=-1)
+        x = F.relu(self.second_skip_layer(x))
+
+        # Output layer
         return self.output(x)
 
     def define_rays(self, height, width, focal, pose):
@@ -57,7 +103,7 @@ class NeRF(nn.Module):
     def pos_encode(self, x, num_levels=6):
         ans = [x]
         for i in range(num_levels):
-            ans.extend([a(i * x * 2 * np.pi) for a in [torch.sin, torch.cos]])
+            ans.extend([a(2**i * np.pi * x) for a in [torch.sin, torch.cos]])
         return torch.cat(ans, -1)
 
     def calc_prodcum(self, tensor: torch.Tensor):

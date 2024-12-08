@@ -35,7 +35,7 @@ def train(checkpoint_path, n_iters=3000):
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-3, eps=1e-4)
 
     plot_step = 500
-    n_samples = 64
+    n_samples = 128
 
     for i in tqdm(range(n_iters)):
         images_idx = np.random.randint(images.shape[0])
@@ -115,16 +115,16 @@ checkpoint_path = "output"
 # train(checkpoint_path)
 plt.ion()
 nerf = NeRF().to(device)
-ckpt = torch.load(f"{checkpoint_path}/ckpt3250.pth")
+ckpt = torch.load(f"{checkpoint_path}/ckpt7250.pth")
 nerf.load_state_dict(ckpt)
 with torch.no_grad():
     while True:
         for i in range(0, 360, 10):
             theta = i
-            phi = 70
+            phi = 90
             pose = get_camera_pose(theta, phi, 3.5).to(device)
 
-            rays_o, rays_d = nerf.define_rays(height, width, 135, pose)
+            rays_o, rays_d = nerf.define_rays(height, width, 80, pose)
             rgb, depth = nerf.render(
                 nerf,
                 rays_o,

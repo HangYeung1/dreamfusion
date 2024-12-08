@@ -52,17 +52,17 @@ def get_camera_pose(theta_deg, phi_deg, radius):
 
 def train(checkpoint_path, n_iters=10000):
     model = NeRF().to(device)
-    ckpt = torch.load(f"{checkpoint_path}/final.pth")
-    model.load_state_dict(ckpt)
+    # ckpt = torch.load(f"{checkpoint_path}/final.pth")
+    # model.load_state_dict(ckpt)
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=0.00001, eps=1e-4, weight_decay=0.1
+        model.parameters(), lr=0.0001, eps=1e-4, weight_decay=0.1
     )
 
     guide = IFGuide(
         t_range=(0.02, 0.98), guidance_scale=150, device=device, dtype=torch.float16
     )
 
-    prompt = "a red bullozer"
+    prompt = "an apple"
     negative_prompt = "cropped, out of frame, morbid, mutilated, bizarre, corrupted, malformed, low quality, artifacts, watermark, signature"
 
     # TURN THIS
