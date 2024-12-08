@@ -2,10 +2,10 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
+from torchvision.transforms.functional import resize
 from tqdm import tqdm
 
-from guidance import IFGuide
+from guidance import StableGuide
 from nerf.nerf import NeRF
 
 if torch.cuda.is_available():
@@ -19,8 +19,8 @@ else:
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
 
-focal = 135
-height, width = 64, 64
+focal = 80
+height = width = 128
 
 
 def render_rotating_nerf(
@@ -42,18 +42,17 @@ def render_rotating_nerf(
             rotation_matrix,
             get_camera_pose(torch.tensor(0), torch.tensor(0), 4).to(device),
         )
-        rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
-        rgb, _ = model.module.render(model.module, rays_o, rays_d, near, far, n_samples)
+        rays_o, rays_d = model.define_rays(height, width, focal, pose)
+        rgb, _ = model.render(model, rays_o, rays_d, near, far, n_samples)
         rendered_images.append(rgb.cpu().numpy())
     return rendered_images
 
 
 def visualize(checkpoint_path):
     nerf = NeRF().to(device)
-    nerf = nn.DataParallel(nerf).to(device)
     ckpt = torch.load(f"{checkpoint_path}/ckpt_final.pth")
-    nerf.module.load_state_dict(ckpt)
-    height, width = 64, 64
+    nerf.load_state_dict(ckpt)
+    height, width = 128, 128
     with torch.no_grad():
         rotating_images = render_rotating_nerf(nerf, height, width, focal, n_samples=64)
 
@@ -110,19 +109,25 @@ def get_camera_pose(theta, phi, r=1.0):
     return camera_matrix
 
 
-def train(checkpoint_path, n_iters=3000):
+def train(checkpoint_path, n_iters=1000):
     model = NeRF().to(device)
-    model = nn.DataParallel(model).to(device)
     optimizer = torch.optim.Adam(
-        model.module.parameters(), lr=0.001, eps=1e-4, weight_decay=0
+        model.parameters(), lr=0.001, eps=1e-4, weight_decay=0.01
     )
 
-    guide = IFGuide(
-        t_range=(0.02, 0.98), guidance_scale=10, device=device, dtype=torch.float16
+    guide = StableGuide(
+        t_range=(0.02, 0.98), guidance_scale=5, device=device, dtype=torch.float32
     )
 
-    pos_embeds = guide.encode_text("A DSLR photo of an apple")
-    neg_embeds = guide.encode_text("")
+    prompt = "a high quality photo of a red apple"
+    negative_prompt = "out of frame, out of frame, out of frame, out of frame, out of frame, out of frame, out of frame"
+
+    neg_embeds = guide.encode_text(negative_prompt)
+
+    pos_embeds_top = guide.encode_text("overhead view of " + prompt)
+    pos_embeds_front = guide.encode_text("front view of " + prompt)
+    pos_embeds_side = guide.encode_text("side view of " + prompt)
+    pos_embeds_back = guide.encode_text("back view of " + prompt)
 
     plot_step = 250
     n_samples = 64
@@ -130,53 +135,73 @@ def train(checkpoint_path, n_iters=3000):
     for i in tqdm(range(n_iters)):
         theta = torch.rand(1) * 2 * torch.pi
         phi = torch.rand(1) * torch.pi
-        pose = get_camera_pose(theta, phi, 4).to(device)
+        pose = get_camera_pose(theta, phi, 1).to(device)
 
-        rays_o, rays_d = model.module.define_rays(height, width, focal, pose)
-        rgb = (
-            model.module.render(
-                model.module,
-                rays_o,
-                rays_d,
-                near=2,
-                far=6,
-                n_samples=n_samples,
-                rand=True,
-            )[0]
-            .permute(1, 2, 0)
-            .view(1, 3, 64, 64)
-            .half()
+        rays_o, rays_d = model.define_rays(height, width, focal, pose)
+        rgb = resize(
+            (
+                model.render(
+                    model,
+                    rays_o,
+                    rays_d,
+                    near=0,
+                    far=1,
+                    n_samples=n_samples,
+                    rand=True,
+                )[0]
+                .permute(2, 0, 1)
+                .view(1, 3, height, width)
+            ),
+            (512, 512),
         )
 
+        curr_embeds = None
+        if phi > torch.pi / 3:
+            curr_embeds = pos_embeds_top
+        elif theta <= torch.pi / 4 and theta > 7 * torch.pi / 4:
+            curr_embeds = pos_embeds_front
+        elif theta > 3 * torch.pi / 4 and theta < 5 * torch.pi / 4:
+            curr_embeds = pos_embeds_back
+        else:
+            curr_embeds = pos_embeds_side
+
         optimizer.zero_grad()
-        loss = guide.calculate_sds_loss(rgb, pos_embeds, neg_embeds)
+        loss = guide.calculate_sds_loss(
+            guide.encode_images(rgb), curr_embeds, neg_embeds
+        )
         loss.backward()
         optimizer.step()
 
         if i % plot_step == 0:
-            torch.save(model.module.state_dict(), f"{checkpoint_path}/ckpt{i}.pth")
+            torch.save(model.state_dict(), f"{checkpoint_path}/ckpt{i}.pth")
 
             with torch.no_grad():
-                rays_o, rays_d = model.module.define_rays(
+                rays_o, rays_d = model.define_rays(
                     height,
                     width,
                     focal,
                     get_camera_pose(torch.tensor(0), torch.tensor(0), 4).to(device),
                 )
-                test, _ = model.module.render(
-                    model.module,
+                test_rgb, test_depth = model.render(
+                    model,
                     rays_o,
                     rays_d,
                     near=2,
-                    far=6,
+                    far=4,
                     n_samples=n_samples,
                     rand=True,
                 )
+
                 plt.figure()
-                plt.imshow(test.detach().cpu())
+                plt.subplot(1, 2, 1)
+                plt.imshow(test_rgb.cpu())
+                plt.subplot(1, 2, 2)
+                plt.imshow(
+                    test_depth.cpu() * (test_rgb.cpu().mean(-1) > 1e-2), cmap="gray"
+                )
                 plt.show()
 
-    torch.save(model.module.state_dict(), f"{checkpoint_path}/ckpt_final.pth")
+    torch.save(model.state_dict(), f"{checkpoint_path}/ckpt_final.pth")
 
 
 checkpoint = "output"
