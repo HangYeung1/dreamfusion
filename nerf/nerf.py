@@ -20,12 +20,16 @@ class NeRF(nn.Module):
         self.layers.append(nn.Linear(filter_size, filter_size))
         self.layers.append(nn.Linear(filter_size, filter_size))
         self.layers.append(nn.Linear(filter_size, filter_size))
+        self.layers.append(nn.Linear(filter_size, filter_size))
+        self.layers.append(nn.Linear(filter_size, filter_size))
+        self.layers.append(nn.Linear(filter_size, filter_size))
+        self.layers.append(nn.Linear(filter_size, filter_size))
         self.output = nn.Linear(filter_size, 4)
 
     def init_weights(self):
         for layer in self.layers:
-            torch.nn.init.xavier_normal_(layer.weight)
-        torch.nn.init.xavier_normal_(self.output.weight)
+            torch.nn.init.kaiming_normal(layer.weight)
+        torch.nn.init.kaiming_normal(self.output.weight)
 
     def forward(self, x):
         for layer in self.layers:
