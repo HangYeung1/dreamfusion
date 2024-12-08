@@ -12,6 +12,9 @@ elif torch.backends.mps.is_available():
 else:
     device = torch.device("cpu")
 
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+
 rawData = np.load("tiny_nerf_data.npz", allow_pickle=True)
 images = rawData["images"]
 poses = rawData["poses"]
@@ -112,12 +115,12 @@ checkpoint_path = "output"
 # train(checkpoint_path)
 plt.ion()
 nerf = NeRF().to(device)
-ckpt = torch.load(f"{checkpoint_path}/final.pth")
+ckpt = torch.load(f"{checkpoint_path}/ckpt3250.pth")
 nerf.load_state_dict(ckpt)
 with torch.no_grad():
     while True:
-        for i in range(0, 90, 10):
-            theta = 90
+        for i in range(0, 360, 10):
+            theta = i
             phi = 70
             pose = get_camera_pose(theta, phi, 3.5).to(device)
 

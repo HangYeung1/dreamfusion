@@ -52,15 +52,20 @@ def get_camera_pose(theta_deg, phi_deg, radius):
 
 def train(checkpoint_path, n_iters=10000):
     model = NeRF().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, eps=1e-4)
-
-    guide = IFGuide(
-        t_range=(0.02, 0.98), guidance_scale=10, device=device, dtype=torch.float16
+    ckpt = torch.load(f"{checkpoint_path}/final.pth")
+    model.load_state_dict(ckpt)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=0.00001, eps=1e-4, weight_decay=0.1
     )
 
-    prompt = "a high quality photo of a red apple"
+    guide = IFGuide(
+        t_range=(0.02, 0.98), guidance_scale=150, device=device, dtype=torch.float16
+    )
+
+    prompt = "a red bullozer"
     negative_prompt = "cropped, out of frame, morbid, mutilated, bizarre, corrupted, malformed, low quality, artifacts, watermark, signature"
 
+    # TURN THIS
     neg_embeds = guide.encode_text(negative_prompt)
     pos_embeds_top = guide.encode_text("overhead view of " + prompt)
     pos_embeds_front = guide.encode_text("front view of " + prompt)
@@ -76,6 +81,7 @@ def train(checkpoint_path, n_iters=10000):
         pose = get_camera_pose(theta, phi, 4).to(device)
 
         focal = (torch.rand(1) * 0.65 + 0.7) * width
+        # focal = 135
 
         rays_o, rays_d = model.define_rays(height, width, focal, pose)
         rgb = (
