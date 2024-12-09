@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -30,7 +32,18 @@ testimg = torch.Tensor(testimg).to(device)
 testpose = torch.Tensor(testpose).to(device)
 
 
-def train(checkpoint_path, n_iters=3000):
+save_name = "lego"
+save_path = "output"
+
+save_path = Path(save_path) / save_name
+weights_path = save_path / "weights"
+images_path = save_path / "images"
+
+weights_path.mkdir(parents=True, exist_ok=True)
+images_path.mkdir(parents=True, exist_ok=True)
+
+
+def train(n_iters=3000):
     model = NeRF().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-3, eps=1e-4)
 
@@ -58,25 +71,35 @@ def train(checkpoint_path, n_iters=3000):
         optimizer.step()
 
         if i % plot_step == 0:
-            torch.save(model.state_dict(), f"{checkpoint_path}/ckpt{i}.pth")
+            torch.save(model.state_dict(), weights_path / f"ckpt_{i}.pth")
             with torch.no_grad():
-                rays_o, rays_d = model.define_rays(height, width, focal, testpose)
-                rgb, depth = model.render(
+                rays_o, rays_d = model.define_rays(
+                    height,
+                    width,
+                    width,
+                    get_camera_pose(torch.tensor(0), torch.tensor(75), 4).to(device),
+                )
+                test_rgb, test_depth = model.render(
                     model,
                     rays_o,
                     rays_d,
                     near=2.0,
                     far=6.0,
                     n_samples=n_samples,
+                    rand=True,
                 )
 
                 plt.figure()
                 plt.subplot(1, 2, 1)
-                plt.imshow(rgb.cpu())
+                plt.imshow(test_rgb.cpu())
                 plt.subplot(1, 2, 2)
-                plt.imshow(depth.cpu() * (rgb.cpu().mean(-1) > 1e-2), cmap="gray")
-                plt.show()
-        torch.save(model.state_dict(), f"{checkpoint_path}/final.pth")
+                plt.imshow(
+                    test_depth.cpu() * (test_rgb.cpu().mean(-1) > 1e-2), cmap="gray"
+                )
+                plt.savefig(images_path / f"pic_{i}.png")
+                plt.close()
+
+    torch.save(model.state_dict(), weights_path / "ckpt_final.pth")
 
 
 @torch.no_grad
@@ -110,31 +133,4 @@ def get_camera_pose(theta_deg, phi_deg, radius):
     return pose
 
 
-checkpoint_path = "output"
-
-# train(checkpoint_path)
-height = width = 512
-plt.ion()
-nerf = NeRF().to(device)
-ckpt = torch.load(f"{checkpoint_path}/ckpt7250.pth")
-nerf.load_state_dict(ckpt)
-with torch.no_grad():
-    while True:
-        for i in range(0, 360, 10):
-            theta = i
-            phi = 75
-            pose = get_camera_pose(theta, phi, 3.5).to(device)
-
-            rays_o, rays_d = nerf.define_rays(height, width, 600, pose)
-            rgb, depth = nerf.render(
-                nerf,
-                rays_o,
-                rays_d,
-                near=2.0,
-                far=10.0,
-                n_samples=128,
-            )
-
-            plt.imshow(rgb.cpu())
-            plt.draw()
-            plt.pause(0.1)
+train()
