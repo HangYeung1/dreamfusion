@@ -113,6 +113,7 @@ def get_camera_pose(theta_deg, phi_deg, radius):
 checkpoint_path = "output"
 
 # train(checkpoint_path)
+height = width = 512
 plt.ion()
 nerf = NeRF().to(device)
 ckpt = torch.load(f"{checkpoint_path}/ckpt7250.pth")
@@ -121,17 +122,17 @@ with torch.no_grad():
     while True:
         for i in range(0, 360, 10):
             theta = i
-            phi = 90
+            phi = 75
             pose = get_camera_pose(theta, phi, 3.5).to(device)
 
-            rays_o, rays_d = nerf.define_rays(height, width, 80, pose)
+            rays_o, rays_d = nerf.define_rays(height, width, 600, pose)
             rgb, depth = nerf.render(
                 nerf,
                 rays_o,
                 rays_d,
                 near=2.0,
-                far=6.0,
-                n_samples=64,
+                far=10.0,
+                n_samples=128,
             )
 
             plt.imshow(rgb.cpu())

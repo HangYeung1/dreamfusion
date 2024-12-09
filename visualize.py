@@ -43,10 +43,10 @@ def get_camera_pose(theta_deg, phi_deg, radius):
     return pose
 
 
-input_path = "output/apple0/ckpt9500.pth"
-output_path = "output/apple0/9500.mp4"
+input_path = "output/apple4/weights/ckpt_final.pth"
+output_path = "output/apple4/30000.mp4"
 height = width = 512
-focal = 450
+focal = 300
 n_samples = 128
 frame_rate = 10
 render_interval = 5
@@ -75,6 +75,8 @@ with torch.no_grad():
             n_samples=n_samples,
         )
 
-        out.write((rgb * 255).cpu().numpy().astype(np.uint8))
+        out.write(
+            cv2.cvtColor((rgb * 255).cpu().numpy().astype(np.uint8), cv2.COLOR_BGR2RGB)
+        )
 
 out.release()
